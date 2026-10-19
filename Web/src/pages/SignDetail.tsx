@@ -346,8 +346,8 @@ const SignDetail = () => {
               special_params.latitude = lat;
               special_params.longitude = lng;
               special_params.description = locationStr;
-            } else if (activity.sign_type === 3 && lat && lng) {
-              // 手势签到可附带位置
+            } else if ((activity.sign_type === 3 || activity.sign_type === 5) && lat && lng) {
+              // 手势/签到码签到可附带位置
               special_params.latitude = lat;
               special_params.longitude = lng;
               special_params.description = locationStr;
@@ -529,7 +529,19 @@ const SignDetail = () => {
                 </div>
               </>
             )}
-            {activity.sign_type === 5 && <PinInput value={signCode} onChange={setSignCode} />}
+            {activity.sign_type === 5 && (
+              <>
+                <PinInput value={signCode} onChange={setSignCode} />
+                <div className="mt-2">
+                  <LocationInput
+                    title="附加签到位置（可选）"
+                    name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || ''}
+                    description={locationStr}
+                    onOpen={() => setIsLocationPickerOpen(true)}
+                  />
+                </div>
+              </>
+            )}
             {activity.sign_type === 4 && <LocationInput name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || ''} description={locationStr} onOpen={() => setIsLocationPickerOpen(true)} />}
             {activity.sign_type === 2 && <QrInput />}
             {isPhotoSign && (
