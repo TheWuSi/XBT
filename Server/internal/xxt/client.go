@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"math"
+	mrand "math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
@@ -40,7 +41,6 @@ type Client struct {
 	aesKey         string
 	mobileUA       string
 	activeFetchMax int
-	deviceCode     string
 	http           *http.Client
 	sessionMu      sync.Mutex
 	sessions       map[string]*Session
@@ -103,7 +103,6 @@ func New(aesKey, mobileUA string, insecureTLS bool, activeFetchMax int) *Client 
 		aesKey:         aesKey,
 		mobileUA:       mobileUA,
 		activeFetchMax: activeFetchMax,
-		deviceCode:     generateDeviceCode(),
 		http: &http.Client{
 			Timeout:   20 * time.Second,
 			Transport: tr,
@@ -569,6 +568,9 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	}
 	// 先空 validate 发起一次请求；仅在学习通明确要求时再走验证码。
 	params.Set("validate", "")
+	// 每次签到使用全新的随机设备指纹，避免学习通按设备拦截多人代签
+	// （对齐 course_helper 每次请求重新生成 deviceCode 的逻辑）。
+	params.Set("deviceCode", generateDeviceCode())
 
 	switch signType {
 	case SignQRCode:
@@ -578,7 +580,6 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 		}
 		params.Set("enc", enc)
 		params.Set("useragent", "")
-		params.Set("deviceCode", c.deviceCode)
 		params.Set("vpProbability", "-1")
 		params.Set("vpStrategy", "")
 		// 兼容 1.0：special.location 为原始位置 JSON 时直接透传。
@@ -618,7 +619,6 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 			}
 		}
 		params.Set("signCode", signCode)
-		params.Set("deviceCode", c.deviceCode)
 		// 手势/签到码签到可附带位置（对齐 ChaoxingSignFaker / course_helper 的学习通逻辑）；
 		// 未提供位置时按参考仓库传 -1 表示无位置。
 		if !applyLocationParams(params, special) {
@@ -628,7 +628,6 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 	case SignLocation:
 		params.Set("address", strVal(special["description"]))
 		params.Set("ifTiJiao", "1")
-		params.Set("deviceCode", c.deviceCode)
 		params.Set("vpProbability", "-1")
 		params.Set("vpStrategy", "")
 		// 位置签到必须携带 location / locationResult（学习通位置校验逻辑），
@@ -703,6 +702,10 @@ func escapeMultipartFilename(filename string) string {
 // deviceCodeKey 与 course_helper 的 Constant.deviceCodeKey 一致。
 const deviceCodeKey = "QrCbNY@MuK1X8HGw"
 
+// locationJitterRange 位置签到坐标微调范围（度），0.00005° 约等于 5 米，
+// 对齐 ChaoxingSignFaker 的 randomizedLocation 正常档。
+const locationJitterRange = 0.00005
+
 // generateDeviceCode 生成设备指纹，逻辑对齐 course_helper 的
 // EncryptionUtil.getDeviceCode：AES-ECB 加密随机 OAID 后 base64。
 func generateDeviceCode() string {
@@ -743,6 +746,10 @@ func applyLocationParams(params url.Values, special map[string]interface{}) bool
 	if err1 != nil || err2 != nil {
 		return false
 	}
+	// 坐标微调：每次签到在 ±locationJitterRange（约 5 米）内随机偏移，
+	// 避免多人代签使用完全相同的坐标被判定作弊（对齐 ChaoxingSignFaker 的 randomizedLocation）。
+	lat += (mrand.Float64()*2 - 1) * locationJitterRange
+	lng += (mrand.Float64()*2 - 1) * locationJitterRange
 	lat6 := math.Round(lat*1e6) / 1e6
 	lng6 := math.Round(lng*1e6) / 1e6
 	params.Set("latitude", strconv.FormatFloat(lat6, 'f', 6, 64))
