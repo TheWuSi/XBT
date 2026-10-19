@@ -6,12 +6,13 @@ interface LocationInputProps {
   name: string;
   description: string;
   onOpen: () => void;
+  title?: string;
 }
 
-export const LocationInput: React.FC<LocationInputProps> = ({ name, description, onOpen }) => (
+export const LocationInput: React.FC<LocationInputProps> = ({ name, description, onOpen, title = '请确认签到位置' }) => (
   <div className="w-full space-y-4 px-1">
     <div className="text-center">
-      <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">请确认签到位置</h3>
+      <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">{title}</h3>
     </div>
     <motion.div 
       whileTap={{ scale: 0.98 }} 

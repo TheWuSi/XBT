@@ -342,7 +342,12 @@ const SignDetail = () => {
 
             const special_params: Record<string, any> = {};
             if (activity.sign_type === 3 || activity.sign_type === 5) special_params.sign_code = signCode;
-            else if (activity.sign_type === 4) {
+            if (activity.sign_type === 4) {
+              special_params.latitude = lat;
+              special_params.longitude = lng;
+              special_params.description = locationStr;
+            } else if (activity.sign_type === 3 && lat && lng) {
+              // 手势签到可附带位置
               special_params.latitude = lat;
               special_params.longitude = lng;
               special_params.description = locationStr;
@@ -511,7 +516,19 @@ const SignDetail = () => {
         {/* Integrated Panel */}
         <div className="bg-white rounded-[2rem] shadow-xl shadow-blue-900/5 border border-slate-100 overflow-hidden flex flex-col">
           <div className="p-5 pb-4">
-            {activity.sign_type === 3 && <GestureInput value={signCode} onChange={setSignCode} />}
+            {activity.sign_type === 3 && (
+              <>
+                <GestureInput value={signCode} onChange={setSignCode} />
+                <div className="mt-2">
+                  <LocationInput
+                    title="附加签到位置（可选）"
+                    name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || ''}
+                    description={locationStr}
+                    onOpen={() => setIsLocationPickerOpen(true)}
+                  />
+                </div>
+              </>
+            )}
             {activity.sign_type === 5 && <PinInput value={signCode} onChange={setSignCode} />}
             {activity.sign_type === 4 && <LocationInput name={LOCATION_PRESETS.find((p: any) => p.lat === lat)?.name || ''} description={locationStr} onOpen={() => setIsLocationPickerOpen(true)} />}
             {activity.sign_type === 2 && <QrInput />}

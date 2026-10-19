@@ -2,13 +2,18 @@ package xxt
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
 	"log"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
@@ -35,6 +40,7 @@ type Client struct {
 	aesKey         string
 	mobileUA       string
 	activeFetchMax int
+	deviceCode     string
 	http           *http.Client
 	sessionMu      sync.Mutex
 	sessions       map[string]*Session
@@ -97,6 +103,7 @@ func New(aesKey, mobileUA string, insecureTLS bool, activeFetchMax int) *Client 
 		aesKey:         aesKey,
 		mobileUA:       mobileUA,
 		activeFetchMax: activeFetchMax,
+		deviceCode:     generateDeviceCode(),
 		http: &http.Client{
 			Timeout:   20 * time.Second,
 			Transport: tr,
@@ -606,13 +613,24 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 			}
 		}
 		params.Set("signCode", signCode)
-		params.Set("latitude", "")
-		params.Set("longitude", "")
+		params.Set("deviceCode", c.deviceCode)
+		// 手势/签到码签到可附带位置（对齐 ChaoxingSignFaker / course_helper 的学习通逻辑）；
+		// 未提供位置时按参考仓库传 -1 表示无位置。
+		if !applyLocationParams(params, special) {
+			params.Set("latitude", "-1")
+			params.Set("longitude", "-1")
+		}
 	case SignLocation:
 		params.Set("address", strVal(special["description"]))
-		params.Set("latitude", strVal(special["latitude"]))
-		params.Set("longitude", strVal(special["longitude"]))
 		params.Set("ifTiJiao", "1")
+		params.Set("deviceCode", c.deviceCode)
+		params.Set("vpProbability", "-1")
+		params.Set("vpStrategy", "")
+		// 位置签到必须携带 location / locationResult（学习通位置校验逻辑），
+		// 之前只传 address/latitude/longitude 会被服务端拒绝，这是位置签到失败的根因。
+		if !applyLocationParams(params, special) {
+			return "", fmt.Errorf("缺少位置参数")
+		}
 	default:
 		params.Set("latitude", "-1")
 		params.Set("longitude", "-1")
@@ -675,6 +693,77 @@ func sanitizeMultipartFilename(filename string) string {
 
 func escapeMultipartFilename(filename string) string {
 	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(filename)
+}
+
+// deviceCodeKey 与 course_helper 的 Constant.deviceCodeKey 一致。
+const deviceCodeKey = "QrCbNY@MuK1X8HGw"
+
+// generateDeviceCode 生成设备指纹，逻辑对齐 course_helper 的
+// EncryptionUtil.getDeviceCode：AES-ECB 加密随机 OAID 后 base64。
+func generateDeviceCode() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	oaid := hex.EncodeToString(b[:]) // 32 位 hex，等价于去掉短横线的随机 UUID
+	block, err := aes.NewCipher([]byte(deviceCodeKey))
+	if err != nil {
+		return ""
+	}
+	// PKCS7 填充后按 ECB 逐块加密
+	plain := []byte(oaid)
+	padLen := block.BlockSize() - len(plain)%block.BlockSize()
+	plain = append(plain, bytes.Repeat([]byte{byte(padLen)}, padLen)...)
+	enc := make([]byte, len(plain))
+	for i := 0; i < len(plain); i += block.BlockSize() {
+		block.Encrypt(enc[i:i+block.BlockSize()], plain[i:i+block.BlockSize()])
+	}
+	return base64.StdEncoding.EncodeToString(enc)
+}
+
+// applyLocationParams 从 special 中读取 latitude/longitude/description，
+// 按学习通要求写入经纬度（保留 6 位小数）与 location / locationResult 参数。
+// 形状对齐 ChaoxingSignFaker 的 addLocationDataParameter：
+// location={"result":1,"latitude":xx.xxxxxx,"longitude":xx.xxxxxx,"address":"..."}，
+// locationResult 在此基础上追加 "mockData":"{\"strategy\":0,\"probability\":-1}"。
+// 坐标缺失或非法时返回 false。
+func applyLocationParams(params url.Values, special map[string]interface{}) bool {
+	latStr := strings.TrimSpace(strVal(special["latitude"]))
+	lngStr := strings.TrimSpace(strVal(special["longitude"]))
+	if latStr == "" || lngStr == "" {
+		return false
+	}
+	lat, err1 := strconv.ParseFloat(latStr, 64)
+	lng, err2 := strconv.ParseFloat(lngStr, 64)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	lat6 := math.Round(lat*1e6) / 1e6
+	lng6 := math.Round(lng*1e6) / 1e6
+	params.Set("latitude", strconv.FormatFloat(lat6, 'f', 6, 64))
+	params.Set("longitude", strconv.FormatFloat(lng6, 'f', 6, 64))
+
+	address := strings.TrimSpace(strVal(special["description"]))
+	base := map[string]interface{}{
+		"result":    1,
+		"latitude":  lat6,
+		"longitude": lng6,
+		"address":   address,
+	}
+	if b, err := json.Marshal(base); err == nil {
+		params.Set("location", string(b))
+	}
+	withMock := map[string]interface{}{
+		"result":    1,
+		"latitude":  lat6,
+		"longitude": lng6,
+		"address":   address,
+		"mockData":  `{"strategy":0,"probability":-1}`,
+	}
+	if b, err := json.Marshal(withMock); err == nil {
+		params.Set("locationResult", string(b))
+	}
+	return true
 }
 
 func buildQRCodeLocationParam(special map[string]interface{}) (string, bool) {
