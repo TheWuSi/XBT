@@ -577,16 +577,21 @@ func (c *Client) Sign(mobile, password string, fixed FixedParams, signType int, 
 			return "", fmt.Errorf("缺少二维码 enc 参数")
 		}
 		params.Set("enc", enc)
-		// 兼容 1.0 的二维码附加位置变种：透传 location 给学习通。
-		// 兼容两种输入：
-		// 1) special.location（1.0 旧格式）
-		// 2) special.latitude/longitude/description（2.0 前端当前格式）
+		params.Set("useragent", "")
+		params.Set("deviceCode", c.deviceCode)
+		params.Set("vpProbability", "-1")
+		params.Set("vpStrategy", "")
+		// 兼容 1.0：special.location 为原始位置 JSON 时直接透传。
 		if locationJSON, ok := buildQRCodeLocationParam(special); ok {
 			params.Set("location", locationJSON)
 		}
-		params.Set("useragent", "")
-		params.Set("latitude", "-1")
-		params.Set("longitude", "-1")
+		// 二维码签到可附带位置（对齐 ChaoxingSignFaker / course_helper 的学习通逻辑）：
+		// 生成 location/locationResult；之前缺 locationResult 导致 errorLocation。
+		// 无位置时按参考仓库传 -1。
+		if !applyLocationParams(params, special) {
+			params.Set("latitude", "-1")
+			params.Set("longitude", "-1")
+		}
 	case SignGesture, SignCode:
 		signCode := strVal(special["sign_code"])
 		if signCode == "" {
@@ -766,50 +771,23 @@ func applyLocationParams(params url.Values, special map[string]interface{}) bool
 	return true
 }
 
+// buildQRCodeLocationParam 兼容 1.0：special["location"] 为原始位置 JSON
+// （字符串或对象）时直接透传。坐标类位置（latitude/longitude/description）
+// 由 applyLocationParams 按学习通逻辑统一生成 location/locationResult。
 func buildQRCodeLocationParam(special map[string]interface{}) (string, bool) {
-	if locRaw, ok := special["location"]; ok && locRaw != nil {
-		switch v := locRaw.(type) {
-		case string:
-			if strings.TrimSpace(v) != "" {
-				return v, true
-			}
-		default:
-			if b, err := json.Marshal(v); err == nil && string(b) != "null" && string(b) != `""` {
-				return string(b), true
-			}
-		}
-	}
-
-	latStr := strings.TrimSpace(strVal(special["latitude"]))
-	lngStr := strings.TrimSpace(strVal(special["longitude"]))
-	desc := strings.TrimSpace(strVal(special["description"]))
-	if latStr == "" && lngStr == "" && desc == "" {
+	locRaw, ok := special["location"]
+	if !ok || locRaw == nil {
 		return "", false
 	}
-
-	location := map[string]interface{}{
-		"result":  1,
-		"address": desc,
-	}
-	if lat, err := strconv.ParseFloat(latStr, 64); err == nil {
-		location["latitude"] = lat
-	} else if latStr != "" {
-		location["latitude"] = latStr
-	}
-	if lng, err := strconv.ParseFloat(lngStr, 64); err == nil {
-		location["longitude"] = lng
-	} else if lngStr != "" {
-		location["longitude"] = lngStr
-	}
-	if desc != "" {
-		location["mockData"] = map[string]interface{}{
-			"description": desc,
+	switch v := locRaw.(type) {
+	case string:
+		if strings.TrimSpace(v) != "" {
+			return v, true
+		}
+	default:
+		if b, err := json.Marshal(v); err == nil && string(b) != "null" && string(b) != `""` {
+			return string(b), true
 		}
 	}
-
-	b, err := json.Marshal(location)
-	if err != nil || string(b) == "{}" {
-		return "", false
-	}
-	return string(b), true
+	return "", false
 }
